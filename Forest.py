@@ -1,6 +1,4 @@
 import numpy as np
-from Tree import Tree
-from scipy.special import comb
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
@@ -23,11 +21,9 @@ log = Logger(__file__)
 
 
 class Forest:
-    def __init__(self, max_depth=None, cores=None, bootstrap_mode: str = ALL, resample_mode=None, variant: str = ADHOC):
+    def __init__(self, max_depth=None, cores=None, variant: str = ADHOC):
         self.max_depth = max_depth
         self.cores = cores
-        self.bootstrap_mode = bootstrap_mode
-        self.resample_mode = resample_mode
         self.trees = {}
         self.variant = variant
         self.input_data = None
@@ -38,22 +34,12 @@ class Forest:
             self.encoder = LabelEncoder()
 
     def fit(self, input_array: np.ndarray, targets: np.array):
-        # Maybe not what is really needed:
-        # Live computation of the models, only store the inputs.=v
-        # Use the data within the input data that fits the missing value pattern,
-        # bag it and predict using the resulting forest?
         if self.variant == ADHOC:
             self._fit_ADHOC(input_array, targets)
         elif self.variant == BOOSTED:
             self._fit_BOOSTED(input_array, targets)
         else:
-            pass  # Todo: Add the other variants
-
-            # subsets=self._generate_subsets(input_array,targets)
-            # for subset in subsets:
-            #     next_tree=Tree(max_depth=self.max_depth,cores=self.cores)
-            #     next_tree.fit(subset[0],subset[1])
-            #     self.trees.append(next_tree)
+            pass
 
     def predict(self, input_array: np.ndarray):
         if self.variant == ADHOC:
@@ -88,15 +74,16 @@ class Forest:
                 no_nan_input = input[~pattern]
                 result = forest.predict(no_nan_input.reshape(1, -1))[0]  # Due to single sample
 
-                self.saved_trees[str(pattern)] = forest  # Todo: Make use of saved trees
-                results.append(result)
-            else:  # Todo: What do i do with all nan values??
-                results.append("RANDOM")
+                self.saved_trees[tuple(pattern)] = forest  # Todo: Make use of saved trees
+
+            else:  # Choose from the known classes
+                result = np.random.choice(matching_targets)
+
+            results.append(result)
 
         return results
 
     def _fit_BOOSTED(self, input_array, targets):
-        # Generate random forest (Split data into train forest/train learner?
         # Resample data
         number_of_unique_patterns = len(np.unique(np.isnan(input_array), axis=1))
         # idea: Number of trees equals to number of patterns=>
@@ -105,6 +92,7 @@ class Forest:
             # Choose feature subset
             number_of_features = int(np.math.sqrt(input_array.shape[1]))  # Root of features is standard ->wiki link
             selected_features = np.random.choice(input_array.shape[1], number_of_features, replace=False)
+
             # Draw data where None of the features are nan, reduce features to selected
             sub_feature_array = input_array[:, selected_features]
             mask = np.isnan(sub_feature_array).any(axis=1)
@@ -121,13 +109,9 @@ class Forest:
             next_tree.fit(subsampled_input, subsampled_targets)
             self.trees[tuple(selected_features)] = next_tree
 
-            # Create and train learner
-
             # Generate learner data: (samples,output_of_trees) as x, target class as y
             learner_input = self._evaluate_trees(input_array)
             assert len(learner_input) == len(targets)  # Todo: Check this in detail
-
-            # Train learner
 
             # Flatten for encoding, unflatten for learning
             input_shape = learner_input.shape
@@ -135,21 +119,23 @@ class Forest:
             self.encoder.fit(flat_input)
             encoded_input = self.encoder.transform(flat_input)
             encoded_input = encoded_input.reshape(input_shape)
-            self.svm.fit(encoded_input, targets)  # Todo Something like epochs? Check N-iterations
+
+            # Train learner
+            self.svm.fit(encoded_input, targets)
 
     def _predict_BOOSTED(self, input_array):
         learner_input = self._evaluate_trees(input_array)
         # Flatten for encoding, unflatten for learning
         input_shape = learner_input.shape
         flat_input = learner_input.flatten()
+
         encoded_input = self.encoder.transform(flat_input)
         encoded_input = encoded_input.reshape(input_shape)
+
         predictions = self.svm.predict(encoded_input)
         return predictions
 
     def _evaluate_trees(self, input_array) -> np.ndarray:
-        # Can use sklearn decision trees, must catch potential nans before and skip eval
-
         tree_result = []
 
         for selected_features, tree in self.trees.items():  # Todo: Parralize
@@ -161,11 +147,13 @@ class Forest:
             nan_result.fill(NAN)
             clean_array = np.where(~nan_mask)
             clean_input = sub_feature_array[clean_array]
+
             # Predict non-Nans
-            if (clean_input.shape[0] > 0):  # Catch the empty case
+            if clean_input.shape[0] > 0:  # Catch the empty case
                 clean_result = tree.predict(clean_input)
             else:
                 clean_result = []
+
             # Merge | Works only for 1D Data
             final_result = np.zeros(len(input_array), dtype=object)
             np.put(final_result, nan_array, nan_result)
@@ -174,5 +162,5 @@ class Forest:
 
         return np.array(tree_result).transpose()
 
-
-        # Todo: A proper string rep
+    def __str__(self):
+        return "%s-Forest id: %s" % (self.variant, id(self))

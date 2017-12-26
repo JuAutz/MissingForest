@@ -18,3 +18,4 @@ def evaluatue(model, input_data: np.array, targets: np.array, numer_of_folds: in
         hits = predicted_targets == targets[test]
         accuracy = sum(hits) / float(len(hits))
         print("Hit percentage %d in time %d for %s" % ((accuracy * 100), diff, str(model)))  # Todo: Better evaluation
+        # Todo: memory consumption ? What else is interesting
