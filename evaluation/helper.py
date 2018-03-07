@@ -4,7 +4,8 @@ import numpy as np
 import time
 from sklearn.model_selection import KFold
 from copy import deepcopy
-
+from logging import Logger
+LOG=Logger(__file__)
 
 def evaluatue(model, input_data: np.array, targets: np.array, numer_of_folds: int = 5):
     kf = KFold(n_splits=numer_of_folds)

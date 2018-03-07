@@ -2,9 +2,9 @@ import numpy as np
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.svm import SVC
+from sklearn.svm import SVC,LinearSVC
 from sklearn.preprocessing import LabelEncoder
-
+import psutil
 # Subset modes
 ALL = "ALL"
 RANDOM = "RANDOM"
@@ -15,13 +15,17 @@ BOOSTED = "BOOSTED"
 
 # Tokens
 NAN = "NaN"
-from logging import Logger
+from logging import Logger,FileHandler,Formatter,INFO,DEBUG
 
 log = Logger(__file__)
-
+hdlr = FileHandler('.log')
+formatter = Formatter('%(asctime)s %(levelname)s %(message)s')
+hdlr.setFormatter(formatter)
+log.addHandler(hdlr)
+log.setLevel(DEBUG)
 
 class Forest:
-    def __init__(self, max_depth=None, cores=None, variant: str = ADHOC):
+    def __init__(self, max_depth=None, cores=None, variant: str = ADHOC, number_of_trees="AUTO"):
         self.max_depth = max_depth
         self.cores = cores
         self.trees = {}
@@ -30,8 +34,9 @@ class Forest:
         self.targets = None
         self.saved_trees = {}
         if self.variant == BOOSTED:
-            self.svm = SVC()
+            self.svm = LinearSVC()
             self.encoder = LabelEncoder()
+            self.number_of_trees = number_of_trees
 
     def fit(self, input_array: np.ndarray, targets: np.array):
         if self.variant == ADHOC:
@@ -68,7 +73,7 @@ class Forest:
             matching_targets = self.targets[np.where((np.isnan(self.input_data) == pattern).all(axis=1))]
             forest = RandomForestClassifier()  # Todo: Parameters??
             no_nan_matching_input = matching_input[:, ~pattern]
-            if no_nan_matching_input.shape[1] > 0:
+            if no_nan_matching_input.shape[1] > 0 and no_nan_matching_input.shape[0]:
                 forest.fit(no_nan_matching_input, matching_targets)  #
 
                 no_nan_input = input[~pattern]
@@ -77,7 +82,10 @@ class Forest:
                 self.saved_trees[tuple(pattern)] = forest  # Todo: Make use of saved trees
 
             else:  # Choose from the known classes
-                result = np.random.choice(matching_targets)
+                if len(matching_targets) > 0:
+                    result = np.random.choice(matching_targets)
+                else:  # Unseen class
+                    result = np.random.choice(self.targets)
 
             results.append(result)
 
@@ -85,12 +93,21 @@ class Forest:
 
     def _fit_BOOSTED(self, input_array, targets):
         # Resample data
-        number_of_unique_patterns = len(np.unique(np.isnan(input_array), axis=1))
+        log.info("Fitting has begun.")
+        log.debug("Current system state: %s "%(str(psutil.virtual_memory())))
+        number_of_unique_patterns = len(np.unique(np.isnan(input_array), axis=0))
         # idea: Number of trees equals to number of patterns=>
-        # More complicates data requires more complicated model <==> higher number of trees.
-        for i in range(number_of_unique_patterns):  # Todo: Parallize
+        # More complicates data requires more complicated model <==> higher number of trees
+        # Insufficent
+        if self.number_of_trees == "AUTO":
+            number_of_trees=int((number_of_unique_patterns ** 2) * 0.5) #Todo: Point?  better number of trees?
+        else:
+            number_of_trees=self.number_of_trees
+        for i in range(number_of_trees):  # Todo: Parallize
+            log.info("At %d of %d trees" % (i+1,number_of_trees))
             # Choose feature subset
             number_of_features = int(np.math.sqrt(input_array.shape[1]))  # Root of features is standard ->wiki link
+            # Todo: In super-sparse data, (lot of nans) there are cases in which finding any datapoints which  even only a root amount of functioning datapoints is unlikely
             selected_features = np.random.choice(input_array.shape[1], number_of_features, replace=False)
 
             # Draw data where None of the features are nan, reduce features to selected
@@ -100,8 +117,11 @@ class Forest:
 
             viable_input = input_array[mask][:, selected_features]
             viable_targets = targets[mask]
+            if len(viable_targets) == 0:
+                continue
 
-            subsampled_input = viable_input[np.random.choice(range(len(viable_input)), len(viable_input))]
+            subsampled_input = viable_input[
+                np.random.choice(range(len(viable_input)), len(viable_input))]  # Todo: a must be non empty!
             subsampled_targets = viable_targets[np.random.choice(range(len(viable_targets)), len(viable_targets))]
 
             # Generate trees:
@@ -109,21 +129,31 @@ class Forest:
             next_tree.fit(subsampled_input, subsampled_targets)
             self.trees[tuple(selected_features)] = next_tree
 
-            # Generate learner data: (samples,output_of_trees) as x, target class as y
-            learner_input = self._evaluate_trees(input_array)
-            assert len(learner_input) == len(targets)  # Todo: Check this in detail
+        # catch edgecase : no viable trees could be generated todo: proper handling
+        if len(self.trees.keys()) == 0:
+            raise RuntimeError("No viable tree could be generated")
+        log.info("Of %d trees, %d were generated" % (number_of_trees, len(self.trees.keys())))
+        log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
+        # Generate learner data: (samples,output_of_trees) as x, target class as y
+        learner_input = self._evaluate_trees(input_array)
+        assert len(learner_input) == len(targets)
 
-            # Flatten for encoding, unflatten for learning
-            input_shape = learner_input.shape
-            flat_input = learner_input.flatten()
-            self.encoder.fit(flat_input)
-            encoded_input = self.encoder.transform(flat_input)
-            encoded_input = encoded_input.reshape(input_shape)
+        # Flatten for encoding, unflatten for learning
+        input_shape = learner_input.shape
+        flat_input = learner_input.flatten()
+        self.encoder.fit(flat_input)
+        encoded_input = self.encoder.transform(flat_input)
+        encoded_input = encoded_input.reshape(input_shape)
 
-            # Train learner
-            self.svm.fit(encoded_input, targets)
+        # Train learner
+        log.info("SVM fitting has begun")
+        self.svm.fit(encoded_input, targets)
+        log.info("Fitting finished")
 
     def _predict_BOOSTED(self, input_array):
+
+        log.info("Evaluation has begun for %d inputs" % len(input_array))
+        log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
         learner_input = self._evaluate_trees(input_array)
         # Flatten for encoding, unflatten for learning
         input_shape = learner_input.shape
@@ -131,13 +161,15 @@ class Forest:
 
         encoded_input = self.encoder.transform(flat_input)
         encoded_input = encoded_input.reshape(input_shape)
-
+        log.info("SVM prediction has begun")
         predictions = self.svm.predict(encoded_input)
+        log.info("Evaluation has finished.")
+        log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
+
         return predictions
 
     def _evaluate_trees(self, input_array) -> np.ndarray:
         tree_result = []
-
         for selected_features, tree in self.trees.items():  # Todo: Parralize
             sub_feature_array = input_array[:, selected_features]
             # Filter out Nans,
