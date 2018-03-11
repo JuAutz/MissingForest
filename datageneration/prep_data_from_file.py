@@ -9,7 +9,13 @@ HEARTHSTONE = "Hearthstone"
 HEARTHSTONE_FILE = join("datasets", "t-a-h-c-hearthstone.csv")
 MEDICAL_N17_NONBINARY= "Medical_N17_Nonbinary"
 MEDICAL_N17_BINARY = "Medical_N17_Binary"
-N17_FILE = join("datasets", "complete_data_n17.csv")
+BAlANCED_N17_NONBINARY= "Balanced_N17_Nonbinary"
+BALANCED_N17_BINARY = "Balanced_N17_Binary"
+
+COMPLETE_N17_FILE = join("datasets", "complete_data_n17.csv")
+BAlANCED_N17_FILE = join("datasets", "balanced_data_n17.csv")
+
+
 
 
 
@@ -21,6 +27,10 @@ def generate_data(datasetname: str):
         return  _generate_from_medical_set("N17_Nonbinary")
     elif datasetname== MEDICAL_N17_BINARY:
         return  _generate_from_medical_set("N17_Binary")
+    elif datasetname== BAlANCED_N17_NONBINARY:
+        return  _generate_from_medical_set("Balanced_N17_Nonbinary")
+    elif datasetname== BALANCED_N17_BINARY:
+        return  _generate_from_medical_set("Balanced_N17_Binary")
     else:
         raise RuntimeError("Setname unknown.")
 
@@ -39,7 +49,9 @@ def _generate_from_hearthstone_set():
 
 def _generate_from_medical_set(set_name:str):
     if set_name=="N17_Nonbinary" or set_name == "N17_Binary":
-        file=N17_FILE
+        file=COMPLETE_N17_FILE
+    elif set_name=="Balanced_N17_Nonbinary" or set_name == "Balanced_N17_Binary":
+        file=BAlANCED_N17_FILE
 
     full_frame=pd.read_csv(file)
     if  "Binary" in set_name:
@@ -57,7 +69,6 @@ def _generate_from_medical_set(set_name:str):
 
     #Normalization
     dataset_inputs=(dataset_inputs-np.nanmin(dataset_inputs))/(np.nanmax(dataset_inputs) - np.nanmin(dataset_inputs))
-
 
     dataset_targets = target_frame.values
     dataset_targets = dataset_targets.astype(str)

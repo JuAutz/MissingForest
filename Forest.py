@@ -30,7 +30,7 @@ log.setLevel(DEBUG)
 
 
 class Forest:
-    def __init__(self, max_depth=None, cores=6, variant: str = ADHOC, number_of_trees="AUTO"):
+    def __init__(self, max_depth=None, cores=6, variant: str = ADHOC, number_of_trees=100):
         self.max_depth = max_depth
         self.cores = cores
         self.trees = {}
@@ -38,10 +38,11 @@ class Forest:
         self.input_data = None
         self.targets = None
         self.saved_trees = {}
+        self.number_of_trees = number_of_trees
+
         if self.variant == BOOSTED:
             self.svm = LinearSVC()
             self.encoder = LabelEncoder()
-            self.number_of_trees = number_of_trees
 
     def fit(self, input_array: np.ndarray, targets: np.array):
         if self.variant == ADHOC:
@@ -101,7 +102,14 @@ class Forest:
         # Select the part of the saved data that matches the pattern of missing values of the input
         matching_input = root_forest.input_data[np.where((np.isnan(root_forest.input_data) == pattern).all(axis=1))]
         matching_targets = root_forest.targets[np.where((np.isnan(root_forest.input_data) == pattern).all(axis=1))]
-        forest = RandomForestClassifier()  # Todo: Parameters??
+
+        if root_forest.number_of_trees=="AUTO" :
+            forest=RandomForestClassifier()
+        else:
+            forest = RandomForestClassifier(n_estimators=root_forest.number_of_trees)
+
+
+        # Todo: Parameters??
         no_nan_matching_input = matching_input[:, ~pattern]
         if no_nan_matching_input.shape[1] > 0 and no_nan_matching_input.shape[0]:
             forest.fit(no_nan_matching_input, matching_targets)  #
@@ -123,13 +131,8 @@ class Forest:
         log.info("Fitting has begun.")
         log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
         number_of_unique_patterns = len(np.unique(np.isnan(input_array), axis=0))
-        # idea: Number of trees equals to number of patterns=>
-        # More complicates data requires more complicated model <==> higher number of trees
-        # Insufficent
-        if self.number_of_trees == "AUTO":
-            number_of_trees = int((number_of_unique_patterns ** 2) * 0.5)  # Todo: Point?  better number of trees?
-        else:
-            number_of_trees = self.number_of_trees
+
+        number_of_trees =self.number_of_trees
         for i in range(number_of_trees):  # Todo: Parallize
             log.info("At %d of %d trees" % (i + 1, number_of_trees))
             # Choose feature subset
