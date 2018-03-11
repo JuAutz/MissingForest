@@ -6,12 +6,12 @@ from sklearn.tree import DecisionTreeClassifier
 import Forest
 
 if __name__ == "__main__":
-    train_input, train_targets = prep_data_from_file.generate_data(prep_data_from_file.MEDICAL_N17)
+    train_input, train_targets = prep_data_from_file.generate_data(prep_data_from_file.MEDICAL_N17_BINARY)
 
     model = Forest.Forest(variant=Forest.ADHOC)
-    #evaluatue(model, input_data=train_input, targets=train_targets)
+    evaluatue(model, input_data=train_input, targets=train_targets)
 
-    model = Forest.Forest(variant=Forest.BOOSTED,number_of_trees=100)
+    model = Forest.Forest(variant=Forest.BOOSTED,number_of_trees=10)
     evaluatue(model, input_data=train_input, targets=train_targets)
 
     imp=Imputer()

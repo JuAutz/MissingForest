@@ -2,9 +2,11 @@ import numpy as np
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.svm import SVC,LinearSVC
+from sklearn.svm import SVC, LinearSVC
 from sklearn.preprocessing import LabelEncoder
+from multiprocessing import Pool, Manager
 import psutil
+
 # Subset modes
 ALL = "ALL"
 RANDOM = "RANDOM"
@@ -13,9 +15,11 @@ RANDOM = "RANDOM"
 ADHOC = "ADHOC"
 BOOSTED = "BOOSTED"
 
+# Globals
+
 # Tokens
 NAN = "NaN"
-from logging import Logger,FileHandler,Formatter,INFO,DEBUG
+from logging import Logger, FileHandler, Formatter, INFO, DEBUG
 
 log = Logger(__file__)
 hdlr = FileHandler('.log')
@@ -24,8 +28,9 @@ hdlr.setFormatter(formatter)
 log.addHandler(hdlr)
 log.setLevel(DEBUG)
 
+
 class Forest:
-    def __init__(self, max_depth=None, cores=None, variant: str = ADHOC, number_of_trees="AUTO"):
+    def __init__(self, max_depth=None, cores=6, variant: str = ADHOC, number_of_trees="AUTO"):
         self.max_depth = max_depth
         self.cores = cores
         self.trees = {}
@@ -62,49 +67,71 @@ class Forest:
 
     def _predict_ADHOC(self, input_array):
         # Select matching subset of data
-        results = []
+        pool = Pool(processes=self.cores)
 
-        for input in input_array:  # Todo: Iterate over patterns instead of inputs
+        # Python parralization preparation
+        forest = self
 
-            pattern = np.isnan(input)
+        # Split data by pattern of nans, to optimize speed and memory
+        patterns = np.unique(np.isnan(input_array), axis=0)
 
-            # Select the part of the saved data that matches the pattern of missing values of the input
-            matching_input = self.input_data[np.where((np.isnan(self.input_data) == pattern).all(axis=1))]
-            matching_targets = self.targets[np.where((np.isnan(self.input_data) == pattern).all(axis=1))]
-            forest = RandomForestClassifier()  # Todo: Parameters??
-            no_nan_matching_input = matching_input[:, ~pattern]
-            if no_nan_matching_input.shape[1] > 0 and no_nan_matching_input.shape[0]:
-                forest.fit(no_nan_matching_input, matching_targets)  #
+        optimized_input_array = [np.where((np.isnan(input_array) == pattern).all(axis=1))[0] for pattern in patterns]
+        #optimized_input_array = np.array(optimized_input_array)
+        parralization_input = [(forest, input_array[input_indicies]) for input_indicies in optimized_input_array]
 
-                no_nan_input = input[~pattern]
-                result = forest.predict(no_nan_input.reshape(1, -1))[0]  # Due to single sample
+        split_results = pool.starmap(Forest._predict_ADHOC_parralized, parralization_input)
 
-                self.saved_trees[tuple(pattern)] = forest  # Todo: Make use of saved trees
+        # Flatten the arrays
+        split_results = np.hstack(np.array(split_results))
+        optimized_input_array_flat = np.hstack(optimized_input_array)
 
-            else:  # Choose from the known classes
-                if len(matching_targets) > 0:
-                    result = np.random.choice(matching_targets)
-                else:  # Unseen class
-                    result = np.random.choice(self.targets)
-
-            results.append(result)
+        # Reorder the array so that the results match the inputs
+        reorder_indicies = optimized_input_array_flat.argsort()
+        results = split_results[reorder_indicies]
 
         return results
+
+    @staticmethod
+    def _predict_ADHOC_parralized(root_forest,
+                                  input_array):  # Todo: better name than root_forest. Needs 2 differ from forest
+
+        assert len(np.unique(np.isnan(input_array), axis=0)) == 1
+        pattern = np.unique(np.isnan(input_array), axis=0)[0]
+
+        # Select the part of the saved data that matches the pattern of missing values of the input
+        matching_input = root_forest.input_data[np.where((np.isnan(root_forest.input_data) == pattern).all(axis=1))]
+        matching_targets = root_forest.targets[np.where((np.isnan(root_forest.input_data) == pattern).all(axis=1))]
+        forest = RandomForestClassifier()  # Todo: Parameters??
+        no_nan_matching_input = matching_input[:, ~pattern]
+        if no_nan_matching_input.shape[1] > 0 and no_nan_matching_input.shape[0]:
+            forest.fit(no_nan_matching_input, matching_targets)  #
+
+            no_nan_input = input_array[:, ~pattern]
+            result = forest.predict(no_nan_input)  # Due to single sample
+
+
+        else:  # Choose from the known classes
+
+            if len(matching_targets) > 0:
+                result = np.random.choice(matching_targets, len(input_array))
+            else:  # Unseen class
+                result = np.random.choice(root_forest.targets, len(input_array))
+        return np.array(result)
 
     def _fit_BOOSTED(self, input_array, targets):
         # Resample data
         log.info("Fitting has begun.")
-        log.debug("Current system state: %s "%(str(psutil.virtual_memory())))
+        log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
         number_of_unique_patterns = len(np.unique(np.isnan(input_array), axis=0))
         # idea: Number of trees equals to number of patterns=>
         # More complicates data requires more complicated model <==> higher number of trees
         # Insufficent
         if self.number_of_trees == "AUTO":
-            number_of_trees=int((number_of_unique_patterns ** 2) * 0.5) #Todo: Point?  better number of trees?
+            number_of_trees = int((number_of_unique_patterns ** 2) * 0.5)  # Todo: Point?  better number of trees?
         else:
-            number_of_trees=self.number_of_trees
+            number_of_trees = self.number_of_trees
         for i in range(number_of_trees):  # Todo: Parallize
-            log.info("At %d of %d trees" % (i+1,number_of_trees))
+            log.info("At %d of %d trees" % (i + 1, number_of_trees))
             # Choose feature subset
             number_of_features = int(np.math.sqrt(input_array.shape[1]))  # Root of features is standard ->wiki link
             # Todo: In super-sparse data, (lot of nans) there are cases in which finding any datapoints which  even only a root amount of functioning datapoints is unlikely
@@ -117,7 +144,7 @@ class Forest:
 
             viable_input = input_array[mask][:, selected_features]
             viable_targets = targets[mask]
-            if len(viable_targets) == 0:
+            if len(viable_targets) == 0: #If selected features are unusable, start over. Current solution causes less than selected number of trees to be created
                 continue
 
             subsampled_input = viable_input[
@@ -158,9 +185,9 @@ class Forest:
         # Flatten for encoding, unflatten for learning
         input_shape = learner_input.shape
         flat_input = learner_input.flatten()
-
         encoded_input = self.encoder.transform(flat_input)
         encoded_input = encoded_input.reshape(input_shape)
+
         log.info("SVM prediction has begun")
         predictions = self.svm.predict(encoded_input)
         log.info("Evaluation has finished.")
@@ -169,30 +196,38 @@ class Forest:
         return predictions
 
     def _evaluate_trees(self, input_array) -> np.ndarray:
-        tree_result = []
-        for selected_features, tree in self.trees.items():  # Todo: Parralize
-            sub_feature_array = input_array[:, selected_features]
-            # Filter out Nans,
-            nan_mask = np.isnan(sub_feature_array).any(axis=1)
-            nan_array = np.where(nan_mask)
-            nan_result = np.ones(len(nan_array), dtype=object)
-            nan_result.fill(NAN)
-            clean_array = np.where(~nan_mask)
-            clean_input = sub_feature_array[clean_array]
 
-            # Predict non-Nans
-            if clean_input.shape[0] > 0:  # Catch the empty case
-                clean_result = tree.predict(clean_input)
-            else:
-                clean_result = []
+        packed_data = [(selected_features, tree, input_array) for selected_features, tree in self.trees.items()]
 
-            # Merge | Works only for 1D Data
-            final_result = np.zeros(len(input_array), dtype=object)
-            np.put(final_result, nan_array, nan_result)
-            np.put(final_result, clean_array, clean_result)
-            tree_result.append(final_result)
+        pool=Pool(processes=self.cores)
+
+        tree_result=pool.starmap(Forest._evaluate_trees_parralized,packed_data)
 
         return np.array(tree_result).transpose()
+
+    @staticmethod
+    def _evaluate_trees_parralized(selected_features, tree, input_array):
+        sub_feature_array = input_array[:, selected_features]
+        # Filter out Nans,
+        nan_mask = np.isnan(sub_feature_array).any(axis=1)
+        nan_array = np.where(nan_mask)
+        nan_result = np.ones(len(nan_array), dtype=object)
+        nan_result.fill(NAN)
+        clean_array = np.where(~nan_mask)
+        clean_input = sub_feature_array[clean_array]
+
+        # Predict non-Nans
+        if clean_input.shape[0] > 0:  # Catch the empty case
+            clean_result = tree.predict(clean_input)
+        else:
+            clean_result = []
+
+        # Merge | Works only for 1D Data
+        final_result = np.zeros(len(input_array), dtype=object)
+        np.put(final_result, nan_array, nan_result)
+        np.put(final_result, clean_array, clean_result)
+
+        return  final_result
 
     def __str__(self):
         return "%s-Forest id: %s" % (self.variant, id(self))
