@@ -77,7 +77,7 @@ class Forest:
         patterns = np.unique(np.isnan(input_array), axis=0)
 
         optimized_input_array = [np.where((np.isnan(input_array) == pattern).all(axis=1))[0] for pattern in patterns]
-        #optimized_input_array = np.array(optimized_input_array)
+        # optimized_input_array = np.array(optimized_input_array)
         parralization_input = [(forest, input_array[input_indicies]) for input_indicies in optimized_input_array]
 
         split_results = pool.starmap(Forest._predict_ADHOC_parralized, parralization_input)
@@ -103,11 +103,10 @@ class Forest:
         matching_input = root_forest.input_data[np.where((np.isnan(root_forest.input_data) == pattern).all(axis=1))]
         matching_targets = root_forest.targets[np.where((np.isnan(root_forest.input_data) == pattern).all(axis=1))]
 
-        if root_forest.number_of_trees=="AUTO" :
-            forest=RandomForestClassifier()
+        if root_forest.number_of_trees == "AUTO":
+            forest = RandomForestClassifier()
         else:
             forest = RandomForestClassifier(n_estimators=root_forest.number_of_trees)
-
 
         # Todo: Parameters??
         no_nan_matching_input = matching_input[:, ~pattern]
@@ -132,36 +131,38 @@ class Forest:
         log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
         number_of_unique_patterns = len(np.unique(np.isnan(input_array), axis=0))
 
-        number_of_trees =self.number_of_trees
-        for i in range(number_of_trees):  # Todo: Parallize
-            log.info("At %d of %d trees" % (i + 1, number_of_trees))
-            # Choose feature subset
-            number_of_features = int(np.math.sqrt(input_array.shape[1]))  # Root of features is standard ->wiki link
-            # Todo: In super-sparse data, (lot of nans) there are cases in which finding any datapoints which  even only a root amount of functioning datapoints is unlikely
-            selected_features = np.random.choice(input_array.shape[1], number_of_features, replace=False)
+        number_of_trees = self.number_of_trees
+        while len(self.trees.keys()) == 0:  # catch edgecase : no viable trees could be generated todo: proper handling?
 
-            # Draw data where None of the features are nan, reduce features to selected
-            sub_feature_array = input_array[:, selected_features]
-            mask = np.isnan(sub_feature_array).any(axis=1)
-            mask = np.invert(mask, dtype=bool)
+            for i in range(number_of_trees):  # Todo: Parallize
+                log.info("At %d of %d trees" % (i + 1, number_of_trees))
+                # Choose feature subset
+                number_of_features = int(np.math.sqrt(input_array.shape[1]))  # Root of features is standard ->wiki link
+                # Todo: In super-sparse data, (lot of nans) there are cases in which finding any datapoints which  even only a root amount of functioning datapoints is unlikely
+                selected_features = np.random.choice(input_array.shape[1], number_of_features, replace=False)
 
-            viable_input = input_array[mask][:, selected_features]
-            viable_targets = targets[mask]
-            if len(viable_targets) == 0: #If selected features are unusable, start over. Current solution causes less than selected number of trees to be created
-                continue
+                # Draw data where None of the features are nan, reduce features to selected
+                sub_feature_array = input_array[:, selected_features]
+                mask = np.isnan(sub_feature_array).any(axis=1)
+                mask = np.invert(mask, dtype=bool)
 
-            subsampled_input = viable_input[
-                np.random.choice(range(len(viable_input)), len(viable_input))]  # Todo: a must be non empty!
-            subsampled_targets = viable_targets[np.random.choice(range(len(viable_targets)), len(viable_targets))]
+                viable_input = input_array[mask][:, selected_features]
+                viable_targets = targets[mask]
+                if len(
+                        viable_targets) == 0:  # If selected features are unusable, start over. Current solution causes less than selected number of trees to be created
+                    continue
 
-            # Generate trees:
-            next_tree = DecisionTreeClassifier()
-            next_tree.fit(subsampled_input, subsampled_targets)
-            self.trees[tuple(selected_features)] = next_tree
+                subsampled_input = viable_input[
+                    np.random.choice(range(len(viable_input)), len(viable_input))]  # Todo: a must be non empty!
+                subsampled_targets = viable_targets[np.random.choice(range(len(viable_targets)), len(viable_targets))]
 
-        # catch edgecase : no viable trees could be generated todo: proper handling
-        if len(self.trees.keys()) == 0:
-            raise RuntimeError("No viable tree could be generated")
+                # Generate trees:
+                next_tree = DecisionTreeClassifier()
+                next_tree.fit(subsampled_input, subsampled_targets)
+                self.trees[tuple(selected_features)] = next_tree
+                if len(self.trees.keys()) == 0:
+                    log.warning("No viable tree was generated on this try, tying again")
+
         log.info("Of %d trees, %d were generated" % (number_of_trees, len(self.trees.keys())))
         log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
         # Generate learner data: (samples,output_of_trees) as x, target class as y
@@ -171,7 +172,10 @@ class Forest:
         # Flatten for encoding, unflatten for learning
         input_shape = learner_input.shape
         flat_input = learner_input.flatten()
-        self.encoder.fit(flat_input)
+        encoder_input = flat_input
+        if not "NaN" in flat_input:
+            encoder_input = np.append(encoder_input, "NaN")
+        self.encoder.fit(encoder_input)
         encoded_input = self.encoder.transform(flat_input)
         encoded_input = encoded_input.reshape(input_shape)
 
@@ -196,15 +200,18 @@ class Forest:
         log.info("Evaluation has finished.")
         log.debug("Current system state: %s " % (str(psutil.virtual_memory())))
 
+        import gc
+        gc.collect()
+
         return predictions
 
     def _evaluate_trees(self, input_array) -> np.ndarray:
 
         packed_data = [(selected_features, tree, input_array) for selected_features, tree in self.trees.items()]
 
-        pool=Pool(processes=self.cores)
+        pool = Pool(processes=self.cores)
 
-        tree_result=pool.starmap(Forest._evaluate_trees_parralized,packed_data)
+        tree_result = pool.starmap(Forest._evaluate_trees_parralized, packed_data)
 
         return np.array(tree_result).transpose()
 
@@ -230,7 +237,7 @@ class Forest:
         np.put(final_result, nan_array, nan_result)
         np.put(final_result, clean_array, clean_result)
 
-        return  final_result
+        return final_result
 
     def __str__(self):
         return "%s-Forest id: %s" % (self.variant, id(self))

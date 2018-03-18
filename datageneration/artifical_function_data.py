@@ -1,6 +1,18 @@
 """ The functions in this module handel generation of artificial data based on a number of functions."""
 
 import numpy as np
+import pandas as pd
+
+def generate_fillerdata(number_of_datapoints:int, number_of_dims:int,nan_percentage:float)->(np.array, np.array):
+    data=pd.DataFrame(np.random.rand(number_of_datapoints,number_of_dims))
+
+    data[data<=nan_percentage]=np.nan
+
+    targets= np.random.rand(number_of_datapoints)
+    targets=targets>0.5
+    targets=targets.astype(str)
+    return  data.as_matrix(),targets
+
 
 
 def generate_data(number_of_datapoints, functions=["A", 'B', "C"]) -> (np.array, np.array):
